@@ -4,6 +4,8 @@ import './config/env';
 
 import {
   command,
+  boolean,
+  flag,
   number,
   option,
   optional,
@@ -26,8 +28,12 @@ import { Book } from './item/Book';
 import { ItemGroup } from './item/ItemGroup';
 import { Item } from './item/Item';
 import { TraunerShelf } from './shelf/TraunerShelf';
+import { KlettShelf } from './shelf/KlettShelf';
 import retry from 'async-retry';
 import { ItemRef } from './item/ItemRef';
+import { join } from 'path';
+import { promises as fs } from 'fs';
+import sanitize from 'sanitize-filename';
 
 const cmd = command({
   name: 'd4sd',
@@ -95,6 +101,32 @@ const cmd = command({
       description: 'Terminates the download, when exceeded.',
       defaultValue: () => 300000,
     }),
+    all: flag({
+      long: 'all',
+      description: 'Download all books from the shelf.',
+      type: boolean,
+    }),
+    allMissing: flag({
+      long: 'all-missing',
+      description:
+        'Download all books from the shelf that are not yet in the output directory.',
+      type: boolean,
+    }),
+    list: flag({
+      long: 'list',
+      description: 'List all books on the shelf without downloading.',
+      type: boolean,
+    }),
+    listMissing: flag({
+      long: 'list-missing',
+      description: 'List all books on the shelf that are not yet in the output directory.',
+      type: boolean,
+    }),
+    pageCount: option({
+      long: 'page-count',
+      type: optional(number),
+      description: 'Manually specify the page count (useful when auto-detection fails).',
+    }),
   },
   handler: async (args) => {
     if (args.format && !hasOwnProperty(paperFormats, args.format)) {
@@ -106,7 +138,7 @@ const cmd = command({
       return;
     }
 
-    if (args.books.length < 1) {
+    if (args.books.length < 1 && !args.all && !args.allMissing && !args.list && !args.listMissing) {
       console.error('Please specify at least one book title or url.');
       return;
     }
@@ -123,7 +155,7 @@ const cmd = command({
       console.log('');
     }
 
-    const shelfs = [DigiShelf, ScookShelf, TraunerShelf];
+    const shelfs = [DigiShelf, ScookShelf, TraunerShelf, KlettShelf];
     const shelfClass = shelfs.find((shelf) => shelf.id === args.shelf);
     if (shelfClass === undefined) {
       console.error(
@@ -134,6 +166,9 @@ const cmd = command({
       return;
     }
 
+    if (shelfClass === KlettShelf) {
+      console.warn('⚠️  Warning: Klett shelf support is a work in progress and not working yet.');
+    }
     try {
       const shelf: Shelf = await shelfClass.load({
         user: args.user,
@@ -152,33 +187,79 @@ const cmd = command({
           }
         }
 
-        let itemRefs = bookTitles.length > 0 ? await shelf.getItems() : [];
+        const downloadAll = args.all || args.allMissing;
+        const listMode = args.list || args.listMissing;
+        let itemRefs =
+          downloadAll || listMode || bookTitles.length > 0 ? await shelf.getItems() : [];
 
-        // filter specified books
-        itemRefs = itemRefs.filter(
-          (ref) =>
-            bookTitles.some((title) =>
-              minimatch(ref.title, title, {
-                nocase: true,
-                dot: true,
-                noglobstar: true,
-                nocomment: true,
-              })
-            ) ||
-            bookUrls.some(
-              (url) => url.replace(/\/$/, '') === ref.url.replace(/\/$/, '')
-            )
-        );
-
-        // add the rest of the book urls with the url as title
-        for (const bookUrl of bookUrls) {
-          if (
-            !itemRefs.some(
-              (ref) => bookUrl.replace(/\/$/, '') === ref.url.replace(/\/$/, '')
-            )
-          ) {
-            itemRefs.push(new ItemRef(shelf, bookUrl, bookUrl));
+        if (listMode) {
+          let refs = itemRefs;
+          if (args.listMissing) {
+            const filtered: ItemRef[] = [];
+            for (const ref of refs) {
+              const pdfPath = join(args.outDir, sanitize(ref.title) + '.pdf');
+              const folderPath = join(args.outDir, sanitize(ref.title));
+              const exists = await Promise.all([
+                fs.access(pdfPath).then(() => true).catch(() => false),
+                fs.access(folderPath).then(() => true).catch(() => false),
+              ]).then(([pdf, folder]) => pdf || folder);
+              if (!exists) filtered.push(ref);
+            }
+            refs = filtered;
           }
+          for (const ref of refs) {
+            console.log(ref.title);
+          }
+          return;
+        }
+
+        if (!downloadAll) {
+          // filter specified books
+          itemRefs = itemRefs.filter(
+            (ref) =>
+              bookTitles.some((title) =>
+                minimatch(ref.title, title, {
+                  nocase: true,
+                  dot: true,
+                  noglobstar: true,
+                  nocomment: true,
+                })
+              ) ||
+              bookUrls.some(
+                (url) => url.replace(/\/$/, '') === ref.url.replace(/\/$/, '')
+              )
+          );
+
+          // add the rest of the book urls with the url as title
+          for (const bookUrl of bookUrls) {
+            if (
+              !itemRefs.some(
+                (ref) => bookUrl.replace(/\/$/, '') === ref.url.replace(/\/$/, '')
+              )
+            ) {
+              itemRefs.push(new ItemRef(shelf, bookUrl, bookUrl));
+            }
+          }
+        }
+
+        if (args.allMissing) {
+          // filter out books that already have a merged PDF in outDir
+          const filtered: ItemRef[] = [];
+          for (const ref of itemRefs) {
+            const pdfPath = join(args.outDir, sanitize(ref.title) + '.pdf');
+            const folderPath = join(args.outDir, sanitize(ref.title));
+            const exists = await Promise.all([
+              fs.access(pdfPath).then(() => true).catch(() => false),
+              fs.access(folderPath).then(() => true).catch(() => false),
+            ]).then(([pdf, folder]) => pdf || folder);
+            if (!exists) filtered.push(ref);
+          }
+          if (itemRefs.length > filtered.length) {
+            console.log(
+              `Skipping ${itemRefs.length - filtered.length} already-downloaded book(s).`
+            );
+          }
+          itemRefs = filtered;
         }
 
         if (itemRefs.length === 0) {

@@ -19,7 +19,7 @@ export async function promisePool<T>(
       promise.then(() => {
         running = running.filter((p) => p !== promise);
         done.push(promise);
-      });
+      }).catch(() => {});
     }
 
     await Promise.race(running);

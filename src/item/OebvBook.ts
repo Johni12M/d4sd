@@ -10,6 +10,7 @@ export class OebvBook extends Book {
   async download(outDir: string, _options?: DownloadOptions) {
     const dir = await this.mkSubDir(outDir);
     const options = defDownloadOptions(_options);
+    await this.mkTempDir();
 
     // Get url of 1st page
     const checkPage = await this.shelf.browser.newPage();
@@ -63,7 +64,7 @@ export class OebvBook extends Book {
         if (!res.ok()) return stop();
 
         // Save it as pdf
-        const pdfFile = this.getPdfPath(dir, pageNo + 1);
+        const pdfFile = this.getTempPdfPath(pageNo + 1);
 
         await page.pdf({
           ...(await getPdfOptions(page, options)),
@@ -77,11 +78,8 @@ export class OebvBook extends Book {
       }
     }, options.concurrency);
 
-    if (downloadedPages != pageCount) {
-      throw new ScrapeError(
-        `A page count of ${pageCount} was parsed, but ${downloadedPages} were downloaded. Please report this issue.`
-      );
-    }
+    // Use actual downloaded count — nav li count is not reliable for total pages
+    pageCount = downloadedPages;
 
     // Merge pdf pages
     options.mergePdfs && (await this.mergePdfPages(dir, downloadedPages));

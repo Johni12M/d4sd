@@ -1,14 +1,37 @@
-import { promisePool } from '../util/promise';
+import { delay, promisePool } from '../util/promise';
 import { waitForGoto } from '../util/puppeteer';
 import { URL } from 'url';
 import { Book } from './Book';
 import { defDownloadOptions, DownloadOptions } from './download-options';
 import { SizeAttributes, getPdfOptions } from './get-pdf-options';
 import { ScrapeError } from '../error/ScrapeError';
+import muhammara from 'muhammara';
+
+class Semaphore {
+  private queue: (() => void)[] = [];
+  private running = 0;
+
+  constructor(private limit: number) {}
+
+  async acquire() {
+    if (this.running < this.limit) {
+      this.running++;
+      return;
+    }
+    await new Promise<void>((resolve) => this.queue.push(resolve));
+    this.running++;
+  }
+
+  release() {
+    this.running--;
+    this.queue.shift()?.();
+  }
+}
 
 export class DigiBook extends Book {
   async download(outDir: string, _options?: DownloadOptions) {
     const dir = await this.mkSubDir(outDir);
+    const tmpDir = await this.mkTempDir();
     const options = defDownloadOptions(_options);
 
     // Get url of 1st svg page
@@ -36,7 +59,9 @@ export class DigiBook extends Book {
       await checkPage.close();
     }
 
-    // Page download pool
+    // Page download pool — semaphore limits concurrent PDF exports to avoid
+    // Chromium renderer corruption when many tabs export simultaneously
+    const pdfSemaphore = new Semaphore(3);
     let downloadedPages = 0;
     const getProgress = () => ({
       item: this,
@@ -68,13 +93,42 @@ export class DigiBook extends Book {
         );
         if (!res.ok()) return stop();
 
-        // Save it as pdf
-        const pdfFile = this.getPdfPath(dir, pageNo);
+        // Save it as pdf via temp dir (ASCII path, avoids muhammara Unicode/long-path issues)
+        const tmpFile = this.getTempPdfPath(pageNo);
+        let valid = false;
+        for (let attempt = 0; attempt < 3; attempt++) {
+          if (attempt > 0) {
+            await delay(1000 * attempt);
+            await page.reload({
+              waitUntil: 'networkidle0',
+              timeout: this.shelf.options.timeout,
+            });
+          }
 
-        await page.pdf({
-          ...(await getPdfOptions(page, options, sizeHint)),
-          path: pdfFile,
-        });
+          await pdfSemaphore.acquire();
+          try {
+            await page.pdf({
+              ...(await getPdfOptions(page, options, sizeHint)),
+              path: tmpFile,
+            });
+          } finally {
+            pdfSemaphore.release();
+          }
+
+          try {
+            const reader = muhammara.createReader(tmpFile);
+            if (reader.getPagesCount() >= 1) {
+              valid = true;
+              break;
+            }
+          } catch {}
+        }
+
+        if (!valid) {
+          throw new ScrapeError(
+            `Page ${pageNo} of "${this.title}" consistently produced an invalid PDF.`
+          );
+        }
 
         downloadedPages++;
         options.onProgress(getProgress());

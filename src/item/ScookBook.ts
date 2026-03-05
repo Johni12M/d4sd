@@ -9,23 +9,101 @@ export class ScookBook extends Book {
   async download(outDir: string, _options?: DownloadOptions) {
     const saveDir = await this.mkSubDir(outDir);
     const options = defDownloadOptions(_options);
+    await this.mkTempDir();
 
     // Get book frame url
     let bookFrameUrl: string;
 
     const userPage = await this.shelf.browser.newPage();
     try {
+      // Intercept JSON responses — some scook versions fetch the viewer URL via API
+      let interceptedUrl: string | null = null;
+      userPage.on('response', async (response) => {
+        try {
+          const ct = response.headers()['content-type'] ?? '';
+          if (!ct.includes('json')) return;
+          const json = await response.json();
+          const candidate =
+            json?.viewerUrl || json?.iframeUrl || json?.url ||
+            json?.bookUrl || json?.readerUrl ||
+            json?.data?.viewerUrl || json?.data?.url;
+          if (typeof candidate === 'string' && candidate.startsWith('http') && !interceptedUrl) {
+            interceptedUrl = candidate;
+          }
+        } catch { /* ignore */ }
+      });
+
       await userPage.goto(this.url, {
         waitUntil: 'load',
         timeout: this.shelf.options.timeout,
       });
 
-      bookFrameUrl = await userPage.$eval(
-        '.book-frame',
-        (bookFrame) => (bookFrame as HTMLIFrameElement).src
-      );
+      // Wait for the unity-veritas component to initialize and render its contents
+      try {
+        await userPage.waitForFunction(
+          () => {
+            // Check for iframe anywhere on page
+            const iframe = document.querySelector('iframe[src]');
+            if (iframe) return true;
+            // Or wait for the component div to have rendered children
+            const comp = document.querySelector('.unity-veritas-product-viewer-component');
+            return comp ? comp.children.length > 0 : false;
+          },
+          { timeout: 60000, polling: 1000 }
+        );
+      } catch { /* timed out — will fail below with useful error */ }
+
+      // Try to find iframe (including inside shadow DOM via all iframes)
+      let viewerUrl: string | null = interceptedUrl;
+      if (!viewerUrl) {
+        viewerUrl = await userPage.evaluate(() => {
+          const iframe = document.querySelector<HTMLIFrameElement>('iframe[src]');
+          return iframe?.src ?? null;
+        });
+      }
+
+      // If no iframe found, the page may be on the wrong section — try the E-Book section
+      if (!viewerUrl) {
+        const productId = await userPage.evaluate(() => {
+          const el = document.querySelector('[data-context]');
+          if (!el) return null;
+          try {
+            return JSON.parse(el.getAttribute('data-context') ?? '{}')?.productId ?? null;
+          } catch { return null; }
+        });
+
+        if (productId) {
+          const ebookUrl = `https://www.scook.at/produkt/${productId}?section=E-Book`;
+          await userPage.goto(ebookUrl, {
+            waitUntil: 'load',
+            timeout: this.shelf.options.timeout,
+          });
+          try {
+            await userPage.waitForFunction(
+              () => !!document.querySelector('iframe[src]') ||
+                (document.querySelector('.unity-veritas-product-viewer-component')?.children.length ?? 0) > 0,
+              { timeout: 60000, polling: 1000 }
+            );
+          } catch { /* will fail below */ }
+
+          viewerUrl = await userPage.evaluate(() =>
+            document.querySelector<HTMLIFrameElement>('iframe[src]')?.src ?? null
+          );
+        }
+      }
+
+      if (!viewerUrl) {
+        const finalUrl = userPage.url();
+        const html = await userPage.evaluate(() => document.body?.innerHTML ?? '');
+        throw new ScrapeError(
+          `Could not find book iframe on scook page "${this.title}". ` +
+            `Final URL: ${finalUrl}\nPage body (first 2000 chars): ${html.slice(0, 2000)}`
+        );
+      }
+
+      bookFrameUrl = viewerUrl;
     } finally {
-      await userPage.close();
+      await userPage.close().catch(() => {});
     }
 
     const framePage = await this.shelf.browser.newPage();
@@ -128,8 +206,8 @@ export class ScookBook extends Book {
         timeout: this.shelf.options.timeout,
       });
 
-      // Save as pdf
-      const pdfFile = this.getPdfPath(saveDir, pageNo);
+      // Save as pdf via temp dir (ASCII path, avoids muhammara Unicode/long-path issues)
+      const pdfFile = this.getTempPdfPath(pageNo);
 
       await page.pdf({
         ...(await getPdfOptions(page, options)),

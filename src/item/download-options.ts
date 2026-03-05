@@ -16,6 +16,7 @@ export interface DownloadOptions {
   concurrency?: number;
   mergePdfs?: boolean;
   format?: PaperFormat;
+  pageCount?: number;
   onStart?: (progress: DownloadProgress) => void;
   onProgress?: (progress: DownloadProgress) => void;
 }
