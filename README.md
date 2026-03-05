@@ -1,5 +1,21 @@
 # digi4school-downloader
 
+> This is a fork of [d4sd by garzj](https://github.com/garzj/d4sd). Huge thanks to [@garzj](https://github.com/garzj) for the original project — all the hard work is theirs! 🙏
+
+## Additional Features in This Fork
+
+- **Klett shelf support** *(work in progress — not fully functional yet)*  
+  Download books from https://bridge.klett.de/ using `--shelf klett`
+- **Helbling shelf support**  
+  Download books from Helbling e-zone using `--shelf helbling`
+- **`--page-count` flag**  
+  Manually specify the page count when auto-detection fails:  
+  `d4sd --shelf klett -u <user> --page-count 200 "https://bridge.klett.de/..."`
+- **`--all-missing` / `--list-missing` flags**  
+  Skip books already present in the output directory
+- **Improved error resilience**  
+  Failed individual pages are retried and skipped instead of crashing the whole download; missing or corrupt pages are skipped during PDF merge
+
 ## Features
 
 - Download books and archives with folders and additional documents from https://digi4school.at/
@@ -41,6 +57,9 @@ Download a book from Scook
 
 Download a book from Trauner DigiBox  
 `d4sd -s trauner -u john.doe@example.com "Englisch *"`
+
+Download a book from Klett bridge *(WIP)*  
+`d4sd -s klett -u john.doe@example.com --page-count <N> "https://bridge.klett.de/..."`
 
 More options can be found with `d4sd -h`.
 
