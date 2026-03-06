@@ -5,7 +5,8 @@ import { Book } from './Book';
 import { defDownloadOptions, DownloadOptions } from './download-options';
 import { SizeAttributes, getPdfOptions } from './get-pdf-options';
 import { ScrapeError } from '../error/ScrapeError';
-import muhammara from 'muhammara';
+import { PDFDocument } from 'pdf-lib';
+import { readFile } from 'fs/promises';
 
 class Semaphore {
   private queue: (() => void)[] = [];
@@ -59,8 +60,6 @@ export class DigiBook extends Book {
       await checkPage.close();
     }
 
-    // Page download pool — semaphore limits concurrent PDF exports to avoid
-    // Chromium renderer corruption when many tabs export simultaneously
     const pdfSemaphore = new Semaphore(3);
     let downloadedPages = 0;
     const getProgress = () => ({
@@ -76,7 +75,6 @@ export class DigiBook extends Book {
 
       const page = await this.shelf.browser.newPage();
       try {
-        // Go to current svg page
         const base = this.url.replace(/(?<=\/)[^\/]+$/g, '');
         const pageUrl = new URL(
           page1Url
@@ -93,7 +91,6 @@ export class DigiBook extends Book {
         );
         if (!res.ok()) return stop();
 
-        // Save it as pdf via temp dir (ASCII path, avoids muhammara Unicode/long-path issues)
         const tmpFile = this.getTempPdfPath(pageNo);
         let valid = false;
         for (let attempt = 0; attempt < 3; attempt++) {
@@ -116,8 +113,9 @@ export class DigiBook extends Book {
           }
 
           try {
-            const reader = muhammara.createReader(tmpFile);
-            if (reader.getPagesCount() >= 1) {
+            const bytes = await readFile(tmpFile);
+            const pdf = await PDFDocument.load(bytes, { ignoreEncryption: true });
+            if (pdf.getPageCount() >= 1) {
               valid = true;
               break;
             }
@@ -143,7 +141,6 @@ export class DigiBook extends Book {
       );
     }
 
-    // Merge pdf pages
     options.mergePdfs && (await this.mergePdfPages(dir, downloadedPages));
   }
 }

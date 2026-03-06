@@ -1,14 +1,11 @@
 import { join } from 'path';
 import { tmpdir } from 'os';
 import { Item } from './Item';
-import muhammara from 'muhammara';
-import { ScrapeError } from '../error/ScrapeError';
+import { PDFDocument } from 'pdf-lib';
 import { promises } from 'fs';
-const { rm, mkdir, copyFile, unlink, access } = promises;
+const { rm, mkdir, readFile, writeFile, access } = promises;
 
 export abstract class Book extends Item {
-  // All muhammara I/O goes through this ASCII temp dir to avoid muhammara's
-  // inability to handle Unicode / long Windows paths (it uses C fopen internally).
   private _tempDir?: string;
 
   async mkTempDir() {
@@ -30,42 +27,34 @@ export abstract class Book extends Item {
   }
 
   async mergePdfPages(subDir: string, pageCount: number) {
-    // Write merged PDF to a temp path (ASCII, short) then copy to final dest
     const outFile = `${subDir}.pdf`;
-    const tmpMerged = join(tmpdir(), `d4sd-merged-${Date.now()}.pdf`);
-
-    const writeStream = new muhammara.PDFWStreamForFile(tmpMerged);
-    const writer = muhammara.createWriter(writeStream);
+    const mergedPdf = await PDFDocument.create();
 
     for (let pageNo = 1; pageNo <= pageCount; pageNo++) {
-      // Read individual pages from temp dir (ASCII path)
       const inFile = this.getTempPdfPath(pageNo);
       try {
-        await access(inFile); // skip if not downloaded
+        await access(inFile);
       } catch {
         console.warn(`Skipping missing page ${pageNo} of "${this.title}"`);
         continue;
       }
       try {
-        writer.appendPDFPagesFromPDF(inFile);
+        const pdfBytes = await readFile(inFile);
+        const pdf = await PDFDocument.load(pdfBytes, { ignoreEncryption: true });
+        const pages = await mergedPdf.copyPages(pdf, pdf.getPageIndices());
+        pages.forEach((page) => mergedPdf.addPage(page));
       } catch (e) {
         console.warn(`Skipping corrupt page ${pageNo} of "${this.title}": ${e}`);
       }
     }
 
-    writer.end();
-    await new Promise<void>((resolve) => writeStream.close(resolve));
+    const mergedBytes = await mergedPdf.save();
+    await writeFile(outFile, mergedBytes);
 
-    // Copy merged result to the final (possibly Unicode) destination path
-    await copyFile(tmpMerged, outFile);
-    await unlink(tmpMerged);
-
-    // Clean up temp dir
     if (this._tempDir) {
       await rm(this._tempDir, { recursive: true }).catch(() => {});
     }
 
-    // Remove the (now unused) OneDrive subDir
     await rm(subDir, { recursive: true, force: true } as any).catch(() => {});
   }
 }
