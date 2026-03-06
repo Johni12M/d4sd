@@ -29,6 +29,7 @@ import { ItemGroup } from './item/ItemGroup';
 import { Item } from './item/Item';
 import { TraunerShelf } from './shelf/TraunerShelf';
 import { KlettShelf } from './shelf/KlettShelf';
+import { HelblingShelf } from './shelf/HelblingShelf';
 import retry from 'async-retry';
 import { ItemRef } from './item/ItemRef';
 import { join } from 'path';
@@ -155,7 +156,7 @@ const cmd = command({
       console.log('');
     }
 
-    const shelfs = [DigiShelf, ScookShelf, TraunerShelf, KlettShelf];
+    const shelfs = [DigiShelf, ScookShelf, TraunerShelf, HelblingShelf, KlettShelf];
     const shelfClass = shelfs.find((shelf) => shelf.id === args.shelf);
     if (shelfClass === undefined) {
       console.error(
